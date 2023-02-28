@@ -118,38 +118,7 @@ extern "C"
     /******************************************************************************
      * PUBLIC TYPES
      ******************************************************************************/
-    enum _state
-    {
-        start,
-        run,
-        stop
-    };
-
-    struct _stateBLDC
-
-    {
-        uint8_t  position; // switching position number
-        uint8_t  revers;   // 1 - reverse rotation
-        uint8_t  Wdt_com;  //
-        uint32_t time_sence_mem[16];
-        uint8_t  index_mem;
-        uint8_t  use_delta_gas;
-        uint32_t time_sence; // time between zeros
-        uint32_t time_sence_start;
-        uint32_t gas;     // throttle stick size
-        uint32_t a;       // current sensor value
-        uint16_t counter; // cyclic packet counter
-        uint16_t start_gas_value;
-        float    Vdc; // supply voltage
-
-        // service parameters
-        uint32_t    k;      // GASa value recalculation factor by SPI
-        uint32_t    MaxGas; // maximum counter value TIM1
-        uint8_t     SenceEnable;
-        uint32_t    Operegenie;
-        uint32_t    Cnt_start;
-        enum _state state;
-    };
+    
 
     /******************************************************************************
      * INLINE FUNCTIONS
