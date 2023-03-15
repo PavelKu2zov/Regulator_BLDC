@@ -30,7 +30,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "bsp.h"
-#include "stm32f30x.h"
+#include "stm32f10x.h"
 
 /******************************************************************************
  * DEFINES
@@ -73,7 +73,12 @@ typedef struct
 /******************************************************************************
  * PRIVATE DATA
  ******************************************************************************/
-state_BLDC_t state_BLDC;
+static state_BLDC_t state_BLDC;
+static uint16_t *   sence1;
+static uint16_t *   sence2;
+static uint16_t *   n_threshold;
+static uint16_t adc_reg_channel_values[QTY_REGULAR_CHANNEL];
+static uint8_t n_throttle_current = 0;
 
 /******************************************************************************
  * PUBLIC DATA
@@ -92,6 +97,7 @@ state_BLDC_t state_BLDC;
  ******************************************************************************/
 static void Stop_BLCD(void);
 static void CalculateVDC(void);
+static uint8_t get_throttle_control_value(void);
 
 /******************************************************************************
  * PRIVATE FUNCTIONS
@@ -99,7 +105,7 @@ static void CalculateVDC(void);
 
 /**
  * @brief Stop BLDC
- * 
+ *
  */
 static void Stop_BLCD(void)
 {
@@ -111,48 +117,65 @@ static void Stop_BLCD(void)
     k4_close;
     k5_close;
     k6_close;
-    
-    StateBLDC.state = stop;
+
+    state_BLDC.state = stop;
     // CalculateVDC();
 }
 
 /**
  * @brief Calculate the power supply
- * 
+ *
  */
 static void CalculateVDC(void)
 {
-  uint16_t tm=0;
-  uint16_t max_val_adc=0; 
-  for (int i=0;i<16;i++)
-  {
-   ADC1->ISR = ADC_ISR_JEOS; //clear JEOC flag
-   ADC1->CR |= ADC_CR_JADSTART; //start convertion
-   while ((ADC1->ISR & ADC_ISR_JEOS) != ADC_ISR_JEOS); 
-    tm += *Threshold_Vp_div2;
-  }
-  tm >>=4;
-  
-  if (((ADC1->CFGR>>3)&3) == 0)//12 bit resolution
-    max_val_adc = 4095;
-  else if (((ADC1->CFGR>>3)&3) == 1)//10 bit resolution 
-    max_val_adc = 1023;
-  else if (((ADC1->CFGR>>3)&3) == 2)//8 bit resolution 
-  max_val_adc = 255;
-    else if (((ADC1->CFGR>>3)&3) == 3)//6 bit resolution 
-  max_val_adc = 63;
-  
-  StateBLDC.Vdc = (3.3*tm)/(K_Rdiv*max_val_adc); 
-  
-   //����� �������� gas ��� �������
- if (StateBLDC.Vdc > 11)
-   StateBLDC.start_gas_value = 2*Autoreload_Tim1/100;//2%
- else  if (StateBLDC.Vdc > 10)
-   StateBLDC.start_gas_value = 3*Autoreload_Tim1/100;//3%  
- else 
-   StateBLDC.start_gas_value = 6*Autoreload_Tim1/100;//6%   
+#if 0
+    uint16_t tm          = 0;
+    uint16_t max_val_adc = 0;
+    for (int i = 0; i < 16; i++)
+    {
+        ADC_ClearFlag(ADC1, ADC_FLAG_JEOC);             // clear JEOC flag
+        ADC_SoftwareStartInjectedConvCmd(ADC1, ENABLE); // start convertion
+        while (RESET == ADC_GetFlagStatus(ADC1, ADC_FLAG_JEOC))
+            ;
 
+        tm += *Threshold_Vp_div2;
+    }
+    tm >>= 4;
+
+    if (((ADC1->CFGR >> 3) & 3) == 0) // 12 bit resolution
+        max_val_adc = 4095;
+    else if (((ADC1->CFGR >> 3) & 3) == 1) // 10 bit resolution
+        max_val_adc = 1023;
+    else if (((ADC1->CFGR >> 3) & 3) == 2) // 8 bit resolution
+        max_val_adc = 255;
+    else if (((ADC1->CFGR >> 3) & 3) == 3) // 6 bit resolution
+        max_val_adc = 63;
+
+    state_BLDC.Vdc = (3.3 * tm) / (K_Rdiv * max_val_adc);
+
+    //����� �������� gas ��� �������
+    if (state_BLDC.Vdc > 11)
+        state_BLDC.start_gas_value = 2 * Autoreload_Tim1 / 100; // 2%
+    else if (state_BLDC.Vdc > 10)
+        state_BLDC.start_gas_value = 3 * Autoreload_Tim1 / 100; // 3%
+    else
+        state_BLDC.start_gas_value = 6 * Autoreload_Tim1 / 100; // 6%
+
+#endif
 }
+
+/**
+ * @brief Get the throttle value 
+ * 
+ * @return throttle value in procent
+ */
+static uint8_t get_throttle_control_value(void)
+{
+    uint16_t throttle_raw = bsp_adc_get_DMA_ch_values(BSP_THROTTLE_CONTROL_ADC_CH);
+
+    return ((100U * throttle_raw) / BSP_THROTTLE_RAW_MAX);
+}
+
 
 /******************************************************************************
  * PUBLIC FUNCTIONS
@@ -167,6 +190,7 @@ static void CalculateVDC(void)
 void app_entry_point(void)
 {
     bsp_init();
+    n_threshold = Threshold_Vp_div2;
 
     k1_close;
     k2_close;
@@ -175,22 +199,20 @@ void app_entry_point(void)
     k5_close;
     k6_close;
 
-    StateBLDC.MaxGas        = Autoreload_Tim1;
-    StateBLDC.SenceEnable   = 1;
-    StateBLDC.Operegenie    = OperegenieDefine;
-    StateBLDC.counter       = 0;
-    StateBLDC.revers        = 0;
-    StateBLDC.index_mem     = 0;
-    StateBLDC.use_delta_gas = 1;
+    state_BLDC.MaxGas        = Autoreload_Tim1;
+    state_BLDC.SenceEnable   = 1;
+    state_BLDC.Operegenie    = OperegenieDefine;
+    state_BLDC.counter       = 0;
+    state_BLDC.revers        = 0;
+    state_BLDC.index_mem     = 0;
+    state_BLDC.use_delta_gas = 1;
     for (int i = 0; i < 16; i++)
-        StateBLDC.time_sence_mem[i] = 0;
+        state_BLDC.time_sence_mem[i] = 0;
 
-    GPIOB->BSRR = GPIO_BSRR_BS_12;
     TIM2->ARR   = 0xFFFFFFFF;
     TIM2->CNT   = 0;
     while (TIM2->CNT < 24000000)
         ;
-    GPIOB->BSRR = GPIO_BSRR_BR_12;
     TIM2->ARR   = Autoreload_Tim2;
     TIM2->CNT   = 0;
 
@@ -201,66 +223,16 @@ void app_entry_point(void)
 
     for (;;)
     {
-        TIM_ITConfig(TIM16, TIM_IT_Update, ENABLE);
-
-        if (TIM6->CNT > MS_1)
+        if (true == is_adc_DMA_ch_ready())
         {
-
-            TIM6->CNT = 0;
-            if (timer_read_adc > 0)
-                timer_read_adc--;
-            if (timer_read_spi > 0)
-                timer_read_spi--;
+            n_throttle_current = get_throttle_control_value();
+        }
+        else
+        {
+            bsp_adc_start_DMA_ch();
         }
 
-        // overcurrent
-        if (ADC_ch10_index >= 10)
-        {
-            ADC_ch10       = ADC_ch10_sum / ADC_ch10_index;
-            ADC_ch10_index = 0;
-            ADC_ch10_sum   = 0;
-        }
-
-        ADC_ch10_sum += ADC_GetConversionValue(ADC1);
-        ADC_ch10_index++;
-
-        if (0) //(ADC_ch10 > 1800)// 1000~ 5A; ���� 1800
-        {
-            GPIOB->BSRR = GPIO_BSRR_BS_12;
-            Stop_BLCD();
-            while (StateBLDC.gas > 50)
-                ;
-            GPIOB->BSRR = GPIO_BSRR_BR_12;
-        }
-        //    else
-        //    {
-        //       GPIOB->BSRR = GPIO_BSRR_BR_12;
-        //    }
-
-        // rotation analysis available or not
-        if (timer_read_adc == 0)
-        {
-            timer_read_adc = 500;
-            if ((*phasa_A + *phasa_B + *phasa_C) < 1) //(StateBLDC.gas < 50)
-            {
-                StateBLDC.state = stop;
-                // GPIOB->BSRR = GPIO_BSRR_BS_12;
-                // CalculateVDC();
-            }
-        }
-        if ((StateBLDC.state == stop) && (StateBLDC.gas > 50))
-        {
-            // Start_BLDC();
-
-            TIM2->ARR           = 0xffffffff;
-            TIM2->CCR1          = 0x5;
-            TIM2->CNT           = 0;
-            StateBLDC.Cnt_start = 1000;
-            StateBLDC.state     = run;
-            TIM_ITConfig(TIM2, TIM_IT_CC1, ENABLE);
-
-            // GPIOB->BSRR = GPIO_BSRR_BR_12;
-        }
+        for (uint32_t i =0; i<0xffff;i++);
     }
 }
 
@@ -276,50 +248,49 @@ void TIM1_CC_IRQHandler(void)
     {
         do
         {
-            ADC1->ISR = ADC_ISR_JEOS;    // clear JEOC flag
-            ADC1->CR |= ADC_CR_JADSTART; // start convertion
-            while ((ADC1->ISR & ADC_ISR_JEOS) != ADC_ISR_JEOS)
-                ;
+            ADC_ClearFlag(ADC1, ADC_FLAG_JEOC);             // clear JEOC flag
+            ADC_SoftwareStartInjectedConvCmd(ADC1, ENABLE); // start convertion
+            while (RESET == ADC_GetFlagStatus(ADC1, ADC_FLAG_JEOC));
 
-            if (*sence1 > *sence2)
-            {
-                //            if (( GPIOB->ODR & GPIO_ODR_12) == GPIO_ODR_12)
-                //            {GPIOB->BSRR = GPIO_BSRR_BR_12;}
-                //            else
-                //            {GPIOB->BSRR = GPIO_BSRR_BS_12;}
-                for (int i = 0; i < 10; i++)
-                    ; // without this delay does not start why it is not clear??????
-
-                //        state_BLDC.time_sence =  TIM2->CNT>>1;
-                if (state_BLDC.state == run)
+                if (*sence1 > *sence2)
                 {
+                    //            if (( GPIOB->ODR & GPIO_ODR_12) == GPIO_ODR_12)
+                    //            {GPIOB->BSRR = GPIO_BSRR_BR_12;}
+                    //            else
+                    //            {GPIOB->BSRR = GPIO_BSRR_BS_12;}
+                    for (int i = 0; i < 10; i++)
+                        ; // without this delay does not start why it is not clear??????
 
-                    if (state_BLDC.index_mem > 15)
-                        state_BLDC.index_mem = 0;
+                    //        state_BLDC.time_sence =  TIM2->CNT>>1;
+                    if (state_BLDC.state == run)
+                    {
 
-                    state_BLDC.time_sence_mem[state_BLDC.index_mem++] = TIM2->CNT >> 1;
-                    state_BLDC.time_sence                             = TIM2->CNT >> 1;
-                    TIM2->CNT                                         = 0;
-                    // state_BLDC.time_sence=0;
+                        if (state_BLDC.index_mem > 15)
+                            state_BLDC.index_mem = 0;
 
-                    //               for (int i=0;i<16;i++)
-                    //                  state_BLDC.time_sence += state_BLDC.time_sence_mem[i];
+                        state_BLDC.time_sence_mem[state_BLDC.index_mem++] = TIM2->CNT >> 1;
+                        state_BLDC.time_sence                             = TIM2->CNT >> 1;
+                        TIM2->CNT                                         = 0;
+                        // state_BLDC.time_sence=0;
 
-                    TIM2->CCR1 = state_BLDC.time_sence; //-state_BLDC.Operegenie;
+                        //               for (int i=0;i<16;i++)
+                        //                  state_BLDC.time_sence += state_BLDC.time_sence_mem[i];
+
+                        TIM2->CCR1 = state_BLDC.time_sence; //-state_BLDC.Operegenie;
+                    }
+                    TIM1->DIER &= ~TIM_DIER_CC4IE;
+                    TIM1->SR = ~TIM_SR_CC4IF;
+
+                    //             if ((state_BLDC.time_sence < 18000) && (n_threshold != Threshold_Vp_div2))// 2000 ��/��� 18000
+                    //             {
+                    //                TIM1->CCR4 = 200;
+                    //                n_threshold = Threshold_Vp_div2;
+                    //
+                    //             }
+                    if (state_BLDC.time_sence < 12000) //
+                        state_BLDC.use_delta_gas = 0;
+                    break;
                 }
-                TIM1->DIER &= ~TIM_DIER_CC4IE;
-                TIM1->SR = ~TIM_SR_CC4IF;
-
-                //             if ((state_BLDC.time_sence < 18000) && (Threshold != Threshold_Vp_div2))// 2000 ��/��� 18000
-                //             {
-                //                TIM1->CCR4 = 200;
-                //                Threshold = Threshold_Vp_div2;
-                //
-                //             }
-                if (state_BLDC.time_sence < 12000) //
-                    state_BLDC.use_delta_gas = 0;
-                break;
-            }
 
         } while ((TIM1->SR & TIM_SR_CC1IF) != TIM_SR_CC1IF);
     }
@@ -337,7 +308,7 @@ void TIM1_CC_IRQHandler(void)
 void TIM2_IRQHandler()
 {
 
-    CountRate++;
+    // CountRate++;
     //////////////////////////////////////////////////////////////////////////////////////new
     if (state_BLDC.state == start)
         TIM2->CNT = 0;
@@ -356,45 +327,45 @@ void TIM2_IRQHandler()
         {
             case 0:
                 k6_close;
-                delay();
+                bsp_delay_us(1);
                 k5_open;
                 sence1 = phasa_C;
-                sence2 = Threshold;
+                sence2 = n_threshold;
                 break; // phasa_C free � + sence PA3
             case 1:
                 k1_close;
-                delay();
+                bsp_delay_us(1);
                 k3_open;
                 sence2 = phasa_A;
-                sence1 = Threshold;
+                sence1 = n_threshold;
                 break; // phasa_A free � - sence PA0
             case 2:
                 k5_close;
-                delay();
+                bsp_delay_us(1);
                 k4_open;
                 sence1 = phasa_B;
-                sence2 = Threshold;
+                sence2 = n_threshold;
                 break; // phasa_B free � + sence PA1
             case 3:
                 k3_close;
-                delay();
+                bsp_delay_us(1);
                 k2_open;
                 sence2 = phasa_C;
-                sence1 = Threshold;
+                sence1 = n_threshold;
                 break; // phasa_C free � - sence PA3
             case 4:
                 k4_close;
-                delay();
+                bsp_delay_us(1);
                 k6_open;
                 sence1 = phasa_A;
-                sence2 = Threshold;
+                sence2 = n_threshold;
                 break; // phasa_A free � + sence PA0
             case 5:
                 k2_close;
-                delay();
+                bsp_delay_us(1);
                 k1_open;
                 sence2 = phasa_B;
-                sence1 = Threshold;
+                sence1 = n_threshold;
                 break; // phasa_B free � - sence PA1
             default:
                 k1_close;
@@ -412,45 +383,45 @@ void TIM2_IRQHandler()
         {
             case 0:
                 k6_close;
-                delay();
+                bsp_delay_us(1);
                 k4_open;
                 sence1 = phasa_C;
-                sence2 = Threshold;
+                sence2 = n_threshold;
                 break; // phasa_C free � + sence PA3
             case 1:
                 k2_close;
-                delay();
+                bsp_delay_us(1);
                 k3_open;
                 sence2 = phasa_B;
-                sence1 = Threshold;
+                sence1 = n_threshold;
                 break; // phasa_B free � - sence PA1
             case 2:
                 k4_close;
-                delay();
+                bsp_delay_us(1);
                 k5_open;
                 sence1 = phasa_A;
-                sence2 = Threshold;
+                sence2 = n_threshold;
                 break; // phasa_A free � + sence PA0
             case 3:
                 k3_close;
-                delay();
+                bsp_delay_us(1);
                 k1_open;
                 sence2 = phasa_C;
-                sence1 = Threshold;
+                sence1 = n_threshold;
                 break; // phasa_C free � - sence PA3
             case 4:
                 k5_close;
-                delay();
+                bsp_delay_us(1);
                 k6_open;
                 sence1 = phasa_B;
-                sence2 = Threshold;
+                sence2 = n_threshold;
                 break; // phasa_B free � + sence PA1
             case 5:
                 k1_close;
-                delay();
+                bsp_delay_us(1);
                 k2_open;
                 sence2 = phasa_A;
-                sence1 = Threshold;
+                sence1 = n_threshold;
                 break; // phasa_A free � - sence PA0
             default:
                 k1_close;
