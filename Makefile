@@ -1,21 +1,8 @@
-########################################################################
-#
-# Copyright (C), 2023, YADRO Development Center, LLC («YADRO»).
-# All Rights Reserved.
-#
-# This software contains the intellectual property of YADRO
-# or is licensed to YADRO from third parties. Use of this
-# software and the intellectual property contained therein is expressly
-# limited to the terms and conditions of the License Agreement under which
-# it is provided by YADRO.
-#
-########################################################################
-
 # ******************************************************************************
 # * INCLUDES
 # ******************************************************************************
 
-# TODO add includes if needed
+-include $(wildcard $(BUILD_DIR)/*.d)
 
 # ******************************************************************************
 # * FUNCTIONS
@@ -27,11 +14,104 @@
 # * VARIABLES
 # ******************************************************************************
 
-# TODO add variables here
+BUILD_DIR = artifacts/build
+TARGET = fw_BLDC
+
+DEBUG = 1			# debug build?
+OPT = -Og			# optimization
+CPU = -mcpu=cortex-m3
+
+C_DEFS =  \
+-DUSE_STDPERIPH_DRIVER \
+-DSTM32F10X_MD
+
+AS_DEFS = 
+
+C_SOURCES =  \
+	codebase/main_fw/application/main.c \
+	codebase/main_fw/application/app.c \
+	codebase/main_fw/hardware/bsp/bsp.c \
+	sdk/third-party/STM32F10x_StdPeriph_Driver/src/stm32f10x_adc.c \
+	sdk/third-party/STM32F10x_StdPeriph_Driver/src/stm32f10x_gpio.c \
+	sdk/third-party/STM32F10x_StdPeriph_Driver/src/stm32f10x_rcc.c \
+	sdk/third-party/STM32F10x_StdPeriph_Driver/src/stm32f10x_tim.c \
+	sdk/third-party/STM32F10x_StdPeriph_Driver/src/misc.c \
+	sdk/local/hardware/system/system_stm32f10x.c  
+
+C_INCLUDES =  \
+	-Icodebase/main_fw/application \
+	-Icodebase/main_fw/hardware/bsp \
+	-Isdk/third-party/STM32F10x_StdPeriph_Driver/inc \
+	-Isdk/third-party/CMSIS/Device/ST/STM32F10x/Include \
+	-Isdk/third-party/CMSIS/Include \
+	-Isdk/local/hardware/system 
+
+# ASM sources
+ASM_SOURCES =  \
+	sdk/local/hardware/system/startup_stm32f103rbtx.s
+
+PREFIX = arm-none-eabi-
+
+# The gcc compiler bin path can be either defined in make command via GCC_PATH variable (> make GCC_PATH=xxx)
+# either it can be added to the PATH environment variable.
+GCC_PATH=D:\soft\gcc-arm-none-eabi-10-2020-q4-major\bin
+
+ifdef GCC_PATH
+	CC = $(GCC_PATH)/$(PREFIX)gcc
+	AS = $(GCC_PATH)/$(PREFIX)gcc -x assembler-with-cpp
+	CP = $(GCC_PATH)/$(PREFIX)objcopy
+	SZ = $(GCC_PATH)/$(PREFIX)size
+else
+	CC = $(PREFIX)gcc
+	AS = $(PREFIX)gcc -x assembler-with-cpp
+	CP = $(PREFIX)objcopy
+	SZ = $(PREFIX)size
+endif
+
+HEX = $(CP) -O ihex
+BIN = $(CP) -O binary -S
+MCU = $(CPU) -mthumb $(FPU) $(FLOAT-ABI)
+
+# compile gcc flags
+ASFLAGS = $(MCU) $(AS_DEFS) $(AS_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections
+
+CFLAGS += $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections
+
+# ifeq ($(DEBUG), 1)
+CFLAGS += -g3 -gdwarf
+# endif
+
+# Generate dependency information
+# CFLAGS += -MMD -MP -MF"$(@:%.o=%.d)"
+
+# link script
+LDSCRIPT = sdk/local/hardware/system/STM32F103RBTx_FLASH.ld
+
+# libraries
+LIBS = -lc -lm -lnosys 
+LIBDIR = 
+LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBDIR) $(LIBS) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections
+
+OBJECTS = $(addprefix $(BUILD_DIR)/,$(notdir $(C_SOURCES:.c=.o)))
+vpath %.c $(sort $(dir $(C_SOURCES)))
+
+OBJECTS += $(addprefix $(BUILD_DIR)/,$(notdir $(ASM_SOURCES:.s=.o)))
+vpath %.s $(sort $(dir $(ASM_SOURCES)))
 
 # ******************************************************************************
 # * TARGETS - MANDATORY
 # ******************************************************************************
+
+$(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile
+	$(CC) $(OBJECTS) $(LDFLAGS) -o $@
+	$(SZ) $@
+
+$(BUILD_DIR)/%.o: %.c Makefile | $(BUILD_DIR) 
+	$(CC) -c $(CFLAGS) -Wa,-a,-ad,-alms=$(BUILD_DIR)/$(notdir $(<:.c=.lst)) $< -o $@
+
+$(BUILD_DIR)/%.o: %.s Makefile | $(BUILD_DIR)
+	$(AS) -c $(CFLAGS) $< -o $@
+
 
 # Init repository / project
 init:
@@ -70,9 +150,8 @@ security_analyze:
 
 
 # Build project in debug configuration
-build_debug:
-	echo "Not implemented"
-	exit 1
+# build_debug:
+# 	$(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin
 
 
 # Build project in release configuraiton
@@ -111,7 +190,28 @@ all_release:
 # * TARGETS - PROJECT-SPECIFIC
 # ******************************************************************************
 
-# TODO add project-specific targets
+
+# $(BUILD_DIR)/%.o: %.c Makefile | $(BUILD_DIR) 
+# 	$(CC) -c $(CFLAGS) -Wa,-a,-ad,-alms=$(BUILD_DIR)/$(notdir $(<:.c=.lst)) $< -o $@
+
+# $(BUILD_DIR)/%.o: %.s Makefile | $(BUILD_DIR)
+# 	$(AS) -c $(CFLAGS) $< -o $@
+
+# $(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile
+# 	$(CC) $(OBJECTS) $(LDFLAGS) -o $@
+# 	$(SZ) $@
+
+$(BUILD_DIR)/%.hex: $(BUILD_DIR)/%.elf | $(BUILD_DIR)
+	$(HEX) $< $@
+	
+$(BUILD_DIR)/%.bin: $(BUILD_DIR)/%.elf | $(BUILD_DIR)
+	$(BIN) $< $@	
+	
+# $(BUILD_DIR):
+# 	mkdir $@	
+
+clean:
+	-rm -fR $(BUILD_DIR)
 
 # ******************************************************************************
 # * END OF MAKEFILE
